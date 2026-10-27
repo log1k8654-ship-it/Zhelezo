@@ -541,6 +541,21 @@ table.t{width:100%;border-collapse:collapse;font-size:14px;font-variant-numeric:
 .rv-ex .chip{margin-left:6px;vertical-align:1px}
 .rv-ex small{display:block;margin-top:1px;font-size:13px;font-weight:700;color:var(--act-ink)}
 .rv-f{display:grid;grid-template-columns:.8fr 1.2fr 1fr;gap:6px}
+.rv-wkg{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.rv-wkg label{display:flex;flex-direction:column;gap:3px;min-width:0}
+.rv-wkg label span{font-size:12px;font-weight:800;color:var(--muted)}
+.rv-wkg .field{min-height:40px;padding:6px 8px;font-weight:700;text-align:center}
+.rv-wkg .field:placeholder-shown{border-color:var(--yellow);background:var(--tint-warm)}
+.rv-f.rv-f1{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.rv-f.tg-f2{grid-template-columns:minmax(0,1fr) minmax(0,2fr)}
+.pg-weeks{display:flex;flex-direction:column;gap:8px;padding:12px 14px;border-radius:18px;background:var(--surface-2)}
+.pg-weeks .day-chips{display:grid;gap:6px}
+.pg-weeks .daychip{min-width:0;padding:0}
+.ex-coach .tg-edit{display:inline-flex;align-items:center;gap:4px;margin-left:auto;min-height:30px;padding:0 4px;border:0;background:none;font-size:13px;font-weight:800;color:var(--act-ink)}
+.ex-coach .tg-edit svg{width:16px;height:16px}
+.ex-toprog{display:inline-flex;align-items:center;gap:5px;margin-top:6px;min-height:32px;padding:0;border:0;background:none;font-size:13px;font-weight:800;color:var(--act-ink)}
+.ex-toprog svg{width:16px;height:16px}
+.tg-lbl{font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .rv-f label{display:flex;flex-direction:column;gap:3px;min-width:0}
 .rv-f label span{font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .rv-f .field{min-height:42px;padding:8px 10px;font-weight:700}
@@ -1180,13 +1195,24 @@ function normProgram(p) {
   const days = p.days.filter(d => d && Array.isArray(d.items)).slice(0, 14).map((d, i) => ({
     name: str(d.name, 60) || `День ${i + 1}`,
     note: str(d.note, 400),
-    items: d.items.filter(it => it && typeof it.ex === 'string' && it.ex).slice(0, 30).map(it => ({
-      ex: it.ex.slice(0, 100), sets: clamp(Math.round(+it.sets) || 0, 0, 20), reps: str(it.reps, 30), w: str(it.w, 30),
-      rest: clamp(Math.round(+it.rest) || 0, 0, 900), note: str(it.note, 200),
-    })),
+    items: d.items.filter(it => it && typeof it.ex === 'string' && it.ex).slice(0, 30).map(it => {
+      const o = { ex: it.ex.slice(0, 100), sets: clamp(Math.round(+it.sets) || 0, 0, 20), reps: str(it.reps, 30), w: str(it.w, 30),
+        rest: clamp(Math.round(+it.rest) || 0, 0, 900), note: str(it.note, 200) };
+      const wk = normWk(it.wk);
+      if (wk) o.wk = wk;
+      return o;
+    }),
   })).filter(d => d.items.length);
   if (!days.length) return null;
-  return { id: safeId(p.id), name: str(p.name, 60) || 'Программа тренера', coach: str(p.coach, 40), note: str(p.note, 600), created: Number.isFinite(p.created) ? p.created : Date.now(), days };
+  const o = { id: safeId(p.id), name: str(p.name, 60) || 'Программа тренера', coach: str(p.coach, 40), note: str(p.note, 600), created: Number.isFinite(p.created) ? p.created : Date.now(), days };
+  if (Number.isFinite(p.start)) o.start = p.start;
+  return o;
+}
+/* Weekly targets of one exercise: [{s: sets, r: reps, w: weight}], a week per entry; null when there are fewer than two weeks. */
+function normWk(a) {
+  if (!Array.isArray(a) || a.length < 2) return null;
+  const wk = a.slice(0, 16).map(x => x && typeof x === 'object' ? { s: clamp(Math.round(+x.s) || 0, 0, 20), r: str(x.r, 30), w: str(x.w, 30) } : { s: 0, r: '', w: '' });
+  return wk.some(x => x.s || x.r) ? wk : null;
 }
 function normalize(d) {
   const f = fresh();
@@ -2953,7 +2979,7 @@ const ANDROID = /Android/i.test(navigator.userAgent);
 let installEv = null;
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEv = e; if (tab === 'more' && !S.active) render(); });
 window.addEventListener('appinstalled', () => { installEv = null; toast('Приложение установлено', 'Значок — на главном экране'); });
-const ui = { progEx: null, progMetric: null, openW: null, histLimit: 25, progDay: null, pick: null };
+const ui = { progEx: null, progMetric: null, openW: null, histLimit: 25, progDay: null, pick: null, tgI: -1, tgScope: 'week' };
 let pendingConfirm = null, pendingRestore = null, pendingCancel = null;
 
 function render(resetScroll) {
@@ -3076,6 +3102,20 @@ function heatmap(A) {
 function activeProgram() {
   return S.programs.find(p => p.id === S.prog.id) || null;
 }
+/* Weekly programmes: week 1 is the week the programme was saved, or the week picked in its card; it moves on every Monday
+   and after the last week stays on the last one. */
+const progWeeks = p => Math.max(0, ...p.days.flatMap(d => d.items.map(it => it.wk ? it.wk.length : 0)));
+function progWeek(p) {
+  const n = progWeeks(p);
+  if (!n) return { k: -1, n: 0, over: false };
+  const raw = Math.round((weekStart(Date.now()) - weekStart(Number.isFinite(p.start) ? p.start : p.created)) / (7 * DAY));
+  return { k: clamp(raw, 0, n - 1), n, over: raw >= n };
+}
+/* The target of one exercise for week k (k < 0: a programme without weeks). */
+function itemTg(it, k) {
+  const x = it.wk && k >= 0 ? it.wk[Math.min(k, it.wk.length - 1)] : null;
+  return x ? { ...it, sets: x.s, reps: x.r, w: x.w || it.w } : it;
+}
 function progCard(A) {
   const p = activeProgram();
   if (!p) return '';
@@ -3083,13 +3123,14 @@ function progCard(A) {
   const d = ui.progDay != null && ui.progDay < p.days.length ? ui.progDay : nx, day = p.days[d];
   let lastT = 0;
   for (const w of A.ws) if (w.plan && w.plan.p === p.id && w.plan.d === d) lastT = w.start;
+  const W = progWeek(p);
   const chips = p.days.length > 1 ? `<div class="day-chips" role="group" aria-label="День программы">${p.days.map((x, k) =>
     `<button class="daychip${k === nx ? ' next' : ''}" data-a="prog-day" data-d="${k}" aria-pressed="${k === d}">День ${k + 1}</button>`).join('')}</div>` : '';
   return `<section class="card prog">
-    <div class="prog-head"><div><p class="label">${d === nx ? 'Следующая по программе' : 'Программа'}</p><h2 class="plan-t">${esc(day.name)}</h2></div>
+    <div class="prog-head"><div><p class="label">${d === nx ? 'Следующая по программе' : 'Программа'}${W.n ? ` · неделя ${W.k + 1} из ${W.n}` : ''}</p><h2 class="plan-t">${esc(day.name)}</h2></div>
       <span class="coach-badge">${ICON.coach}${esc(p.coach || 'тренер')}</span></div>
     ${chips}
-    <ol class="pg-list">${day.items.map(it => `<li><span>${esc(exById(it.ex).name)}</span><span>${esc(tgText({ ...it, rest: 0 })) || '—'}</span></li>`).join('')}</ol>
+    <ol class="pg-list">${day.items.map(it => `<li><span>${esc(exById(it.ex).name)}</span><span>${esc(tgText({ ...itemTg(it, W.k), rest: 0 })) || '—'}</span></li>`).join('')}</ol>
     ${day.note ? `<p class="pg-note">${esc(day.note)}</p>` : ''}
     <p class="note">${esc(p.name)} · ${lastT ? `этот день был ${daysAgo(lastT)}` : 'этот день ещё не делали'}</p>
     <button class="btn btn-act btn-xl" data-a="prog-start" data-id="${esc(p.id)}" data-d="${d}">Начать ${d === nx ? 'тренировку' : `день ${d + 1}`}</button>
@@ -3147,7 +3188,7 @@ function viewWorkout() {
   let total = 0, done = 0;
   a.items.forEach(it => it.sets.forEach(s => { total++; if (s.done) done++; }));
   const pday = a.plan ? ((S.programs.find(p => p.id === a.plan.p) || { days: [] }).days[a.plan.d] || null) : null;
-  let h = `<section class="wk-head has-gk"><span class="wk-gk" aria-hidden="true">${mascotSVG('focused', 54, { still: 1 })}</span><div><p class="label">${a.plan ? esc(a.plan.n) : 'Тренировка идёт'}</p><div class="clock" id="clock">${clock(Date.now() - a.start)}</div></div>
+  let h = `<section class="wk-head has-gk"><span class="wk-gk" aria-hidden="true">${mascotSVG('focused', 54, { still: 1 })}</span><div><p class="label">${a.plan ? esc(a.plan.n) + (a.plan.wk >= 0 ? ` · неделя ${a.plan.wk + 1}` : '') : 'Тренировка идёт'}</p><div class="clock" id="clock">${clock(Date.now() - a.start)}</div></div>
     <div class="wk-sum"><b id="wk-vol">${fmtKg(st.vol)}</b><span id="wk-sets">${pl(st.n, 'подход', 'подхода', 'подходов')}</span><span id="wk-kcal">${liveKcal()}</span></div></section>`;
   if (pday && pday.note) h += `<p class="pg-note">${esc(pday.note)}</p>`;
   if (total) h += `<section class="wk-prog"><div class="bar-track" role="progressbar" aria-label="Отмеченные подходы" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${done}"><div class="bar-fill" style="width:${(done / total * 100).toFixed(1)}%"></div></div><span class="note">${done === total ? 'Все подходы отмечены. Можно завершать!' : `Отмечено ${done} из ${pl(total, 'подхода', 'подходов', 'подходов')}`}</span></section>`;
@@ -3169,7 +3210,9 @@ function exCard(it, i, A) {
     if (b && b.w > 0) meta += `<br>Рекорд: ${fmtW(b.w)}${NB}кг × ${b.wR}`;
   }
   const tg = it.tg, tl = tgText(tg);
-  const coach = tg && (tl || tg.note) ? `<p class="ex-coach"><span>Тренер</span>${esc(tl)}${tg.note ? `<em>${esc(cap(tg.note))}</em>` : ''}</p>` : '';
+  const plan = S.active && S.active.plan && !demoMode;
+  const coach = tg ? `<p class="ex-coach"><span>Тренер</span>${esc(tl) || 'без цифр'}${plan ? `<button class="tg-edit" data-a="tg-edit" data-i="${i}" aria-label="Изменить цель: ${esc(ex.name)}">${ICON.pen}Изменить</button>` : ''}${tg.note ? `<em>${esc(cap(tg.note))}</em>` : ''}</p>`
+    : plan ? `<button class="ex-toprog" data-a="tg-edit" data-i="${i}">+ Добавить в программу</button>` : '';
   const allDone = it.sets.length > 0 && it.sets.every(s => s.done);
   const rows = it.sets.map((s, j) => {
     const cls = 'set' + (s.done ? ' is-done' : '') + (s.rec ? ' is-rec' : '');
@@ -3432,7 +3475,7 @@ function sheet(html, sticky) {
 function dismissSheet() {
   const wrap = $('#sheet-wrap');
   if (!wrap) return;
-  if (ui.pick) { ui.pick = null; openReview(); return; }
+  if (ui.pick) { const P = ui.pick; ui.pick = null; if (P.w != null) openTgEdit(P.w); else openReview(); return; }
   if (!wrap.dataset.sticky) closeSheet();
 }
 function closeSheet() { $('#layer').innerHTML = ''; pendingConfirm = null; pendingRestore = null; pendingCancel = null; ui.pick = null; overlays(); }
@@ -4288,7 +4331,7 @@ ${nImg ? `К сообщению приложены изображения (${nIm
 - "rest" — отдых между подходами в секундах, целое; 0, если не указано.
 - "note" — короткие указания тренера к упражнению: темп, пауза, суперсет, техника. Пустая строка, если их нет.
 - Разминку, кардио, растяжку и общие советы не делай упражнениями: коротко перескажи их в "note" дня или программы.
-- Если программа расписана на несколько недель с ростом нагрузки, возьми первую неделю, а прогрессию опиши в "note" программы.
+- Если цели расписаны по неделям (таблица с колонкой на каждую неделю или блоки «Неделя 1», «Неделя 2»…) и упражнения в неделях те же, добавь упражнению "weeks": цели по неделям по порядку, например [{"sets": 2, "reps": "8"}, {"sets": 2, "reps": "6"}], а в "sets" и "reps" поставь цели первой недели. Неразборчивую неделю оставь {"sets": 0, "reps": ""}. Без недель "weeks" не пиши.
 - Если что-то не видно или неразборчиво, не выдумывай: оставь поле пустым и напиши об этом в "warnings".
 - Если в материалах нет программы тренировок, ответь {"error": "not_program", "message": "что там на самом деле, коротко"}.
 
@@ -4316,6 +4359,8 @@ function draftFromResult(r) {
       let ex = typeof it.ex === 'string' && ids.has(it.ex) ? it.ex : null;
       if (!ex && name) ex = byName.get(norm(name)) || null;
       const o = { ex, sets: clamp(Math.round(+it.sets) || 0, 0, 20), reps: str(it.reps, 30), w: str(it.w, 30), rest: clamp(Math.round(+it.rest) || 0, 0, 900), note: str(it.note, 200) };
+      const wk = normWk(Array.isArray(it.weeks) ? it.weeks.map(x => x && ({ s: x.sets, r: x.reps, w: x.w })) : null);
+      if (wk) { o.wk = wk; const b = wk.find(x => x.s || x.r); if (b && !o.sets && !o.reps) { o.sets = b.s; o.reps = b.r; } }
       if (!ex) {
         if (!name) return null;
         o.nw = { name: name.charAt(0).toUpperCase() + name.slice(1), group: GROUPS.includes(it.group) ? it.group : 'Другое', bw: !!it.bw };
@@ -4348,6 +4393,10 @@ IMP_ERR.images_unavailable = IMP_ERR.noimg;
 
 /* ---------- on-device recognition, used when Claude is not reachable: OCR for pictures, rules for text ---------- */
 const EX_RULES = [
+  [/(?:^|\s)с рез(?:\s|$)|резин/, null],
+  [/жопомах|ягодичн\S* мах/, 'kickback'],
+  [/сгибан\S* голен/, 'leg_curl'],
+  [/разгибан\S* голен/, 'leg_ext'],
   [/хип.?траст|hip.?thrust|ягодичн\S* мост(?!ик)/, 'hip_thrust'],
   [/мостик/, 'glute_bridge'],
   [/болгарск|сплит.?присед/, 'bss'],
@@ -4399,7 +4448,7 @@ const EX_RULES = [
   [/ролик/, 'ab_wheel'],
   [/велосипед/, 'bicycle'],
 ];
-const GROUP_RULES = [[/ягодиц|мост|отведен|кикбек|сумо/, 'Ягодицы'], [/ног|бедр|присед|выпад|икр/, 'Ноги'], [/спин|тяг|подтяг|гиперэкст/, 'Спина'], [/груд|л[её]ж|отжим/, 'Грудь'],
+const GROUP_RULES = [[/ягодиц|мост|отведен|кикбек|сумо|фрогг|жопомах/, 'Ягодицы'], [/ног|бедр|присед|выпад|икр/, 'Ноги'], [/спин|тяг|подтяг|гиперэкст/, 'Спина'], [/груд|л[её]ж|отжим/, 'Грудь'],
   [/плеч|дельт|мах/, 'Плечи'], [/бицепс|трицепс|рук/, 'Руки'], [/пресс|планк|скруч|кор/, 'Кор']];
 const nrm = s => norm(s).replace(/[«»"'`()[\],.;:!?]/g, ' ').replace(/\s+/g, ' ').trim();
 function matchEx(name) {
@@ -4411,6 +4460,7 @@ function matchEx(name) {
 }
 const guessGroup = name => { const n = nrm(name); const g = GROUP_RULES.find(([rx]) => rx.test(n)); return g ? g[1] : 'Другое'; };
 const NOTE_RX = /разминк|заминк|кардио|растяжк|дорожк|эллипс|велотренаж|ходьб|степпер|скакалк/i;
+const SR_CELL = /^\d{1,2}\s*[xхХX×*]\s*\d/;
 const DAY_RX = /^(?:(?:день|тренировка|занятие|day|workout)\s*(?:№\s*)?(\d{1,2})|(\d{1,2})\s*(?:-?(?:й|ой|ая))?\s*(?:день|тренировка))\s*[:.)\-–—]*\s*(.*)$/i;
 const WDAY_RX = /^(понедельник|вторник|среда|четверг|пятница|суббота|воскресенье)\s*[:.\-–—]*\s*(.*)$/i;
 const THEME_RX = /ягодиц|ноги|низ\b|верх\b|спина|грудь|плечи|руки|фулбади|full ?body|в[сс][её] тело|пресс/i;
@@ -4456,9 +4506,11 @@ function parseProgramText(text) {
     if (!/[а-яёa-z]{3}/i.test(name) || name.length > 70) return false;
     if (!day) newDay();
     const nm = name.charAt(0).toUpperCase() + name.slice(1);
-    day.items.push({ ex: matchEx(nm), name: nm, group: guessGroup(nm), bw: false, sets: o.sets, reps: o.reps, w: o.w, rest: o.rest || defRest, note: o.note });
-    return true;
+    const it = { ex: matchEx(nm), name: nm, group: guessGroup(nm), bw: false, sets: o.sets, reps: o.reps, w: o.w, rest: o.rest || defRest, note: o.note };
+    day.items.push(it);
+    return it;
   };
+  let unread = 0;
   for (const raw of lines) {
     if (stop) break;
     const wk = raw.match(/^(?:неделя|week)\s*(\d+)/i);
@@ -4468,6 +4520,21 @@ function parseProgramText(text) {
     if (co && !res.coach) { res.coach = co[1]; if (raw.length < 40) continue; }
     if (raw.includes('|')) {
       const cells = raw.split('|').map(c => c.trim());
+      /* A weekly table row: the name, then a cell per week ("2*8", "3x10-12"; "?" where a photo was unreadable). */
+      if (cells.filter(c => SR_CELL.test(c)).length >= 2) {
+        const ni = cells.findIndex(c => /[а-яёa-z]{3}/i.test(c) && !SR_CELL.test(c));
+        if (ni >= 0) {
+          if (head && head.day != null && head.day < ni && cells[head.day] && cells[head.day] !== lastDayCell) { lastDayCell = cells[head.day]; newDay(/^\d+$/.test(lastDayCell) ? `День ${lastDayCell}` : lastDayCell); }
+          const wk = cells.slice(ni + 1);
+          while (wk.length && !wk[wk.length - 1]) wk.pop();
+          unread += wk.filter(c => c === '?').length;
+          const weeks = wk.slice(0, 16).map(c => { const o = c && c !== '?' ? parseTail(c) : null; return o && o.found ? { sets: o.sets, reps: o.reps, w: o.w } : { sets: 0, reps: '', w: '' }; });
+          const base = weeks.find(x => x.sets || x.reps) || { sets: 0, reps: '' };
+          const it = addItem(cells[ni], { sets: base.sets, reps: base.reps, w: '', rest: 0, note: '' });
+          if (it && weeks.length >= 2) it.weeks = weeks;
+          continue;
+        }
+      }
       if (cells.some(c => /упражн|название/i.test(c)) && cells.length > 1) {
         head = {}; cells.forEach((c, k) => {
           const l = c.toLowerCase();
@@ -4527,11 +4594,183 @@ function parseProgramText(text) {
   }
   res.days = res.days.filter(d => d.items.length);
   if (!res.days.length) return { error: 'not_program', message: 'не нашлось ни одного упражнения с подходами или повторами' };
+  if (unread) res.warnings.push(`${pl(unread, 'клетка', 'клетки', 'клеток')} таблицы не прочитались: они пустые и подсвечены жёлтым. Впишите туда «подходы×повторы», например 2×8.`);
   return res;
 }
+/* A photo for OCR: about 2000 px wide, then Sauvola thresholding (black or white by the local mean and contrast),
+   which keeps text and table digits readable over busy pictures, shadows and uneven light. */
+async function ocrPrep(blob) {
+  let src, w0, h0;
+  try { src = await createImageBitmap(blob); w0 = src.width; h0 = src.height; } catch (e) {
+    const url = URL.createObjectURL(blob);
+    try { src = await new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = bad; i.src = url; }); } finally { URL.revokeObjectURL(url); }
+    w0 = src.naturalWidth; h0 = src.naturalHeight;
+  }
+  const k = Math.min(2, 2000 / w0, Math.sqrt(6e6 / (w0 * h0)));
+  const W = Math.max(1, Math.round(w0 * k)), H = Math.max(1, Math.round(h0 * k));
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d'); g.drawImage(src, 0, 0, W, H);
+  /* The colour copy is a second chance for a name the thresholding broke. */
+  c.orig = document.createElement('canvas'); c.orig.width = W; c.orig.height = H; c.orig.getContext('2d').drawImage(c, 0, 0);
+  if (src.close) src.close();
+  const d = g.getImageData(0, 0, W, H), px = d.data, n = W * H, gray = new Uint8Array(n);
+  for (let i = 0; i < n; i++) gray[i] = (px[4 * i] * 77 + px[4 * i + 1] * 150 + px[4 * i + 2] * 29) >> 8;
+  const W1 = W + 1, I = new Uint32Array(W1 * (H + 1)), I2 = new Float64Array(W1 * (H + 1));
+  for (let y = 0; y < H; y++) {
+    let s = 0, s2 = 0;
+    for (let x = 0; x < W; x++) { const v = gray[y * W + x]; s += v; s2 += v * v; I[(y + 1) * W1 + x + 1] = I[y * W1 + x + 1] + s; I2[(y + 1) * W1 + x + 1] = I2[y * W1 + x + 1] + s2; }
+  }
+  const r = Math.max(8, Math.round(Math.min(W, H) / 60));
+  for (let y = 0; y < H; y++) {
+    const y0 = Math.max(0, y - r), y1 = Math.min(H, y + r + 1);
+    for (let x = 0; x < W; x++) {
+      const x0 = Math.max(0, x - r), x1 = Math.min(W, x + r + 1), a = (x1 - x0) * (y1 - y0);
+      const s = I[y1 * W1 + x1] - I[y0 * W1 + x1] - I[y1 * W1 + x0] + I[y0 * W1 + x0];
+      const s2 = I2[y1 * W1 + x1] - I2[y0 * W1 + x1] - I2[y1 * W1 + x0] + I2[y0 * W1 + x0];
+      const m = s / a, sd = Math.sqrt(Math.max(0, s2 / a - m * m)), o = gray[y * W + x] > m * (1 + 0.15 * (sd / 128 - 1)) ? 255 : 0;
+      px[4 * (y * W + x)] = px[4 * (y * W + x) + 1] = px[4 * (y * W + x) + 2] = o;
+    }
+  }
+  g.putImageData(d, 0, 0);
+  return c;
+}
+/* One cell of a weekly table, "2*8" = 2 sets of 8. OCR often turns the "*" into ' or : or a digit (2'8, 28, 2412),
+   so a cell without a star is read against the row's usual number of sets and the rep counts coaches use. */
+const SR_REPS = [4, 5, 6, 8, 10, 12, 14, 15, 16, 18, 20, 25, 30];
+function srTok(raw, S) {
+  const t = raw.replace(/[xхХX×'’‘:°"]/g, '*').replace(/[^\d*%]/g, '');
+  const m = t.match(/^(\d{1,2})\*+(\d{1,3})$/);
+  /* sure: 2 for a real star or x, 1 for a quote or colon in its place (it may also hide a digit), 0 for a guess. */
+  if (m && +m[1] >= 1 && +m[1] <= 12 && +m[2] >= 1 && +m[2] <= 100) return { s: +m[1], r: +m[2], sure: /\d\s*[*xхХX×]/.test(raw) ? 2 : 1 };
+  if (!S || !/^\d+$/.test(t) || !t.startsWith(String(S))) return null;
+  const rest = t.slice(String(S).length), ok = v => v[0] !== '0' && SR_REPS.includes(+v);
+  const tries = [rest];
+  if (/^[0147]/.test(rest)) tries.push(rest.slice(1));
+  for (const v of tries) {
+    if (ok(v) && (v === rest || v.length > 1 || rest[0] === '0' || /^[68]$/.test(v))) return { s: S, r: +v, sure: 0 };
+  }
+  for (const v of tries) if (v.length >= 3 && ok(v.slice(0, 2))) return { s: S, r: +v.slice(0, 2), sure: 0 };
+  return null;
+}
+const OCR_CYR = 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя0123456789 /-.,()';
+/* A coach table with a column per week ("Приседания | 2*8 | 2*6 | …"). The first pass finds its rows; then the name and the
+   numbers of each row are read again on their own, with only the characters they can hold, which brings back most lost stars.
+   Returns lines for parseProgramText, or null when the photo is not such a table. */
+async function ocrTable(w, c, data, prog) {
+  const lines = [];
+  for (const bl of data.blocks || []) for (const pa of bl.paragraphs || []) for (const ln of pa.lines || []) if (ln.text.trim()) lines.push(ln);
+  const bare = t => t.replace(/[|[\](){}!]/g, '');
+  const isNum = t => { const s = bare(t); return /\d/.test(s) && /^\d[\d*%°'’‘":xх×]*$/.test(s); };
+  const STAR = /\d\s*[*xх×'’‘:°]\s*\d/;
+  const rows = [];
+  for (const ln of lines) {
+    const ws = (ln.words || []).filter(x => x.text.trim()), nums = ws.filter(x => isNum(x.text));
+    if (nums.length < 3) continue;
+    const v = nums.map(x => bare(x.text));
+    const head = !v.some(s => /\D/.test(s)) && v.filter(s => +s >= 1 && +s <= 16).length >= v.length * 0.6;
+    rows.push({ ln, ws, nums, head, y0: ln.bbox.y0, y1: ln.bbox.y1, stars: nums.filter(x => STAR.test(bare(x.text))).length });
+  }
+  if (rows.filter(r => r.stars >= 2).length < 2) return null;
+  rows.sort((a, b) => a.y0 - b.y0);
+  const med = a => { const s = a.slice().sort((x, y) => x - y); return s.length ? s[s.length >> 1] : 0; };
+  const rh = med(rows.filter(r => !r.head).map(r => r.y1 - r.y0)) || 30;
+  /* Days: a row of week numbers or a wide gap starts a new block. */
+  const blocks = [];
+  let cur = null, last = null;
+  for (const r of rows) {
+    if (r.head) { cur = null; last = r; continue; }
+    if (!cur || r.y0 - last.y1 > 2.5 * rh) { cur = { rows: [] }; blocks.push(cur); }
+    cur.rows.push(r); last = r;
+  }
+  const W = c.width, H = c.height, pad = Math.round(rh * 0.15) + 2;
+  const rect = (x0, y0, x1, y1) => { x0 = Math.max(0, Math.round(x0)); y0 = Math.max(0, Math.round(y0)); return { left: x0, top: y0, width: Math.max(1, Math.min(W, Math.round(x1)) - x0), height: Math.max(1, Math.min(H, Math.round(y1)) - y0) }; };
+  const total = blocks.reduce((a, b) => a + b.rows.length, 0) * 2;
+  let done = 0;
+  const read = async (rc, wl, psm, src) => {
+    await w.setParameters({ tessedit_pageseg_mode: psm || '7', tessedit_char_whitelist: wl });
+    const res = await w.recognize(src || c, { rectangle: rc }, { text: true, blocks: true });
+    if (!psm) prog(++done / total);
+    const ws = [];
+    for (const bl of res.data.blocks || []) for (const pa of bl.paragraphs || []) for (const ln of pa.lines || []) for (const x of ln.words || []) if (x.text.trim()) ws.push(x);
+    return { text: res.data.text.trim(), ws };
+  };
+  const nmClean = s => s.replace(/[^А-Яа-яЁёA-Za-z0-9 /\-.,]/g, ' ').replace(/\s+/g, ' ').trim()
+    .replace(/^[\d\s.,\-/]+(?=[А-Яа-яЁёA-Za-z])/, '').replace(/[\s\-.,/]+$/, '').replace(/\s[^\sА-Яа-яЁё\d]{1,2}$/, '');
+  const score = s => (s.match(/[А-Яа-яЁё]/g) || []).length + (EX_RULES.some(([rx]) => rx.test(nrm(s))) ? 4 : 0);
+  let S = 0;
+  { const cnt = {}; for (const r of rows) for (const x of r.nums) { const m = srTok(bare(x.text), 0); if (m) cnt[m.s] = (cnt[m.s] || 0) + 1; }
+    S = +(Object.entries(cnt).sort((a, b) => b[1] - a[1])[0] || [0])[0]; }
+  const titles = lines.filter(l => !rows.some(r => r.ln === l) && /(трениров\S*|день|занятие)/i.test(l.text) && !/упражн|недел/i.test(l.text));
+  const out = [];
+  let prevY = -1;
+  for (let b = 0; b < blocks.length; b++) {
+    const B = blocks[b];
+    /* The numbers start where most rows have their first number: digits inside a name ("Жим 30", "Тяга блока 1 рукой") stay with it. */
+    const colX = med(B.rows.map(r => r.nums[0].bbox.x0));
+    const x1 = Math.max(...B.rows.map(r => r.ln.bbox.x1));
+    const nameX = Math.min(...B.rows.map(r => { const f = r.ws.find(x => x.bbox.x1 < colX && /[А-Яа-яЁёA-Za-z]{2}/.test(x.text)); return f ? f.bbox.x0 : colX; }));
+    for (const r of B.rows) {
+      if (!imp.busy) return null;
+      const y0 = r.y0 - pad, y1 = r.y1 + pad;
+      const nr = rect(nameX - pad, y0, colX - pad, y1);
+      r.n2 = colX - nameX > rh ? nmClean((await read(nr, OCR_CYR)).text) : (prog(++done / total), '');
+      if (colX - nameX > rh && !/[А-Яа-яЁё]{3}/.test(r.n2) && c.orig) r.n2 = nmClean((await read(nr, OCR_CYR, '7', c.orig)).text);
+      r.n1 = nmClean(r.ws.filter(x => x.bbox.x1 < colX).map(x => x.text).join(' '));
+      r.t2 = (await read(rect(colX - pad, y0, x1 + pad, y1), '0123456789*xх×| ')).ws.map(x => ({ t: bare(x.text), x: (x.bbox.x0 + x.bbox.x1) / 2 })).filter(x => /\d/.test(x.t));
+      r.t1 = r.nums.filter(x => x.bbox.x1 > colX).map(x => ({ t: bare(x.text), x: (x.bbox.x0 + x.bbox.x1) / 2 }));
+    }
+    /* Columns: the token count most rows agree on, centred where those rows put their tokens. */
+    const cnt = {};
+    for (const r of B.rows) for (const k of [r.t2.length, r.t1.length]) if (k >= 2) cnt[k] = (cnt[k] || 0) + 1;
+    const N = +(Object.entries(cnt).sort((a, b) => b[1] - a[1] || b[0] - a[0])[0] || [0])[0];
+    if (N < 2) continue;
+    const cx = Array(N).fill(0), cn = Array(N).fill(0);
+    for (const r of B.rows) for (const t of [r.t2, r.t1]) if (t.length === N) t.forEach((x, i) => { cx[i] += x.x; cn[i]++; });
+    for (let i = 0; i < N; i++) cx[i] = cn[i] ? cx[i] / cn[i] : (i ? cx[i - 1] + (x1 - colX) / N : colX + (x1 - colX) / N / 2);
+    const col = x => { let best = 0; for (let i = 1; i < N; i++) if (Math.abs(cx[i] - x) < Math.abs(cx[best] - x)) best = i; return best; };
+    const by = (t, i) => t.length === N ? [t[i]] : t.filter(x => col(x.x) === i);
+    const tl = titles.filter(l => l.bbox.y1 <= B.rows[0].y0 && l.bbox.y0 > prevY).pop();
+    prevY = B.rows[B.rows.length - 1].y1;
+    const tm = tl && tl.text.match(/(трениров\S*|день|занятие)\s*(?:№\s*)?(\d{1,2})?/i);
+    const rowsOut = [];
+    for (const r of B.rows) {
+      /* Each cell has up to two readings; a sure one (with a star) wins, then the value the row repeats most. */
+      const cand = [];
+      for (let i = 0; i < N; i++) cand.push([...by(r.t2, i), ...by(r.t1, i)].map(x => srTok(x.t, S)).filter(Boolean));
+      if (cand.filter(c => c.length).length < 2) continue;
+      for (let i = 0; i < N; i++) if (!cand[i].length && imp.busy) {
+        const a = i ? (cx[i - 1] + cx[i]) / 2 : cx[0] - (cx[1] - cx[0]) / 2, b = i < N - 1 ? (cx[i] + cx[i + 1]) / 2 : cx[i] + (cx[i] - cx[i - 1]) / 2;
+        await w.setParameters({ tessedit_pageseg_mode: '8', tessedit_char_whitelist: '0123456789*xх×' });
+        const m = srTok((await w.recognize(c, { rectangle: rect(a, r.y0 - pad, b, r.y1 + pad) })).data.text.trim(), S);
+        if (m) cand[i].push(m);
+      }
+      /* A real star wins; otherwise readings that agree, a quote-star and the values the rest of the row repeats add up. */
+      const key = x => x.s + '*' + x.r, freq = {};
+      cand.forEach(cs => new Set(cs.map(key)).forEach(k => { freq[k] = (freq[k] || 0) + 1; }));
+      const cells = cand.map(cs => {
+        const pool = cs.some(x => x.sure === 2) ? cs.filter(x => x.sure === 2) : cs;
+        const sc = x => (x.sure ? 1.5 : 0) + cs.filter(y => key(y) === key(x)).length + freq[key(x)] - 1;
+        const best = pool.slice().sort((x, y) => sc(y) - sc(x))[0];
+        return best ? key(best) : '?';
+      });
+      let name = score(r.n2) >= score(r.n1) ? r.n2 : r.n1;
+      if (/^(упражн|недел|день)/i.test(name)) continue;
+      if (!/[А-Яа-яЁёA-Za-z]{3}/.test(name)) name = 'Упражнение без названия';
+      name = name.split(' ').map((x, j) => j && /^[А-ЯЁ]{1,4}$/.test(x) && /[а-яё]/.test(name) ? x.toLowerCase() : x).join(' ');
+      rowsOut.push(name + ' | ' + cells.join(' | '));
+    }
+    if (!rowsOut.length) continue;
+    out.push(tm ? `${tm[1].charAt(0).toUpperCase() + tm[1].slice(1).toLowerCase()} ${tm[2] || b + 1}` : `День ${b + 1}`, ...rowsOut);
+  }
+  if (!out.length) return null;
+  for (const l of lines) if (!rows.some(r => r.ln === l) && NOTE_RX.test(l.text) && (l.text.match(/[А-Яа-яЁё]{3,}/g) || []).length >= 3) out.push(l.text.replace(/[|[\]]/g, ' ').replace(/\s+/g, ' ').trim());
+  return out.join('\n');
+}
+/* Photos → text. A coach table is read row by row; anything else is read as plain text, as before. */
 async function ocrImages(blobs, onProgress) {
   await lib('ocr');
-  const T = window.Tesseract, opts = { logger: m => { if (m.status === 'recognizing text' && onProgress) onProgress(m.progress); } };
+  const T = window.Tesseract, ph = { a: 0, b: 1 };
+  const opts = { logger: m => { if (m.status === 'recognizing text' && onProgress && ph.b) onProgress(ph.a + m.progress * ph.b); } };
   if (VENDOR) Object.assign(opts, { workerPath: VENDOR + 'worker.min.js', corePath: VENDOR, langPath: VENDOR, workerBlobURL: false });
   const w = await T.createWorker(['rus', 'eng'], 1, opts);
   try {
@@ -4539,6 +4778,19 @@ async function ocrImages(blobs, onProgress) {
     for (let k = 0; k < blobs.length; k++) {
       if (!imp.busy) break;
       imp.ocrN = [k + 1, blobs.length];
+      let tab = null;
+      try {
+        const c = await ocrPrep(blobs[k]);
+        Object.assign(ph, { a: 0, b: 0.3 });
+        await w.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1', tessedit_char_whitelist: '' });
+        const r1 = await w.recognize(c, {}, { text: true, blocks: true });
+        ph.b = 0;
+        if (imp.busy) tab = await ocrTable(w, c, r1.data, x => { if (onProgress) onProgress(0.3 + 0.7 * x); });
+      } catch (e) { tab = null; }
+      if (!imp.busy) break;
+      if (tab) { out.push(tab); continue; }
+      Object.assign(ph, { a: 0, b: 1 });
+      await w.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '0', tessedit_char_whitelist: '' });
       out.push((await w.recognize(blobs[k])).data.text);
     }
     return out;
@@ -4658,12 +4910,13 @@ function openReview(fresh) {
   const prev = $('.sheet'), top = fresh || !prev ? 0 : prev.scrollTop;
   const nEx = D.days.reduce((a, d) => a + d.items.length, 0), nNew = D.days.reduce((a, d) => a + d.items.filter(i => i.nw).length, 0);
   const field = (k, d, i, v, lbl, mode) => `<label><span>${lbl}</span><input class="field" data-rv="${k}" data-d="${d}" data-i="${i}" value="${esc(v)}" inputmode="${mode}" autocomplete="off"></label>`;
-  const scan = D.mode === 'import';
+  const scan = D.mode === 'import', nWk = Math.max(0, ...D.days.flatMap(d => d.items.map(i => i.wk ? i.wk.length : 0)));
   const intro = scan
     ? `Нашлось ${pl(D.days.length, 'день', 'дня', 'дней')} и ${pl(nEx, 'упражнение', 'упражнения', 'упражнений')}. Нажмите на название, чтобы заменить упражнение, если распозналось не то.${nNew ? ` Отмеченные «новое» добавятся в ваш список упражнений.` : ''}`
     : `Добавляйте упражнения в каждый день из списка. Подходы, повторы и вес можно заполнить сразу или оставить пустыми.${nNew ? ` Отмеченные «новое» добавятся в ваш список упражнений.` : ''}`;
   sheet(`<div class="sheet-head"><h2 class="sheet-title">${scan ? 'Проверьте программу' : D.mode === 'edit' ? 'Изменить программу' : 'Новая программа'}</h2><button class="btn btn-text" data-a="rv-cancel">Отмена</button></div>
     <p class="note">${intro}</p>
+    ${nWk ? `<p class="note">Цели расписаны по неделям: ${pl(nWk, 'неделя', 'недели', 'недель')}, в каждой клетке «подходы×повторы». ${D.mode === 'edit' ? '' : 'Первой неделей станет текущая, поменять можно в карточке программы.'}</p>` : ''}
     ${D.warnings.length ? `<div class="warn-card"><b>На что обратить внимание</b>${D.warnings.map(w => `<p class="note">${esc(w)}</p>`).join('')}</div>` : ''}
     <input class="field" data-rv="name" value="${esc(D.name)}" placeholder="Название программы" aria-label="Название программы" maxlength="60" style="font-weight:800">
     <label class="rv-coach"><span>Тренер, если есть</span><input class="field" data-rv="coach" value="${esc(D.coach)}" placeholder="Имя тренера" maxlength="40" autocomplete="off"></label>
@@ -4674,7 +4927,9 @@ function openReview(fresh) {
       ${d.items.length ? '' : '<p class="rv-empty">Здесь пока пусто. Добавьте первое упражнение.</p>'}
       ${d.items.map((it, ii) => `<div class="rv-it"><div class="rv-top"><button class="rv-ex" data-a="rv-swap" data-d="${di}" data-i="${ii}"><b>${esc(it.nw ? it.nw.name : exById(it.ex).name)}</b>${it.nw ? '<i class="chip chip-new">новое</i>' : ''}<small>заменить</small></button>
           <span class="rv-acts">${ii ? `<button class="icon-x up" data-a="rv-up" data-d="${di}" data-i="${ii}" aria-label="Поднять выше">↑</button>` : ''}<button class="icon-x" data-a="rv-del" data-d="${di}" data-i="${ii}" aria-label="Убрать упражнение">×</button></span></div>
-        <div class="rv-f">${field('sets', di, ii, it.sets || '', 'подходы', 'numeric')}${field('reps', di, ii, it.reps, 'повторы', 'text')}${field('w', di, ii, it.w, 'вес, кг', 'decimal')}</div>
+        ${it.wk ? `<div class="rv-wkg">${it.wk.map((x, j) => `<label><span>${j + 1} нед.</span><input class="field" data-rv="wkc" data-d="${di}" data-i="${ii}" data-k="${j}" value="${esc(x.s || x.r ? `${x.s || '?'}×${x.r || '?'}` : '')}" placeholder="?" autocomplete="off" aria-label="Неделя ${j + 1}: подходы×повторы"></label>`).join('')}</div>
+          <div class="rv-f rv-f1">${field('w', di, ii, it.w, 'вес, кг', 'decimal')}</div>`
+          : `<div class="rv-f">${field('sets', di, ii, it.sets || '', 'подходы', 'numeric')}${field('reps', di, ii, it.reps, 'повторы', 'text')}${field('w', di, ii, it.w, 'вес, кг', 'decimal')}</div>`}
         ${it.note || it.rest ? `<p class="rv-note">${it.rest ? `Отдых ${mmss(it.rest)}. ` : ''}${esc(cap(it.note))}</p>` : ''}</div>`).join('')}
       <button class="btn btn-sm btn-ghost" data-a="rv-add" data-d="${di}">+ Упражнение</button></section>`).join('')}
     ${D.days.length < 14 ? '<button class="btn btn-wide rv-day-add" data-a="rv-day-add">+ День</button>' : ''}
@@ -4690,11 +4945,15 @@ function saveDraft() {
       if (hit) ex = hit.id;
       else { const c = { id: 'c_' + uid(), name: it.nw.name, group: it.nw.group, bw: it.nw.bw, custom: true }; real.custom.push(c); ex = c.id; }
     }
-    return { ex, sets: clamp(Math.round(+it.sets) || 0, 0, 20), reps: it.reps, w: it.w, rest: it.rest, note: it.note };
+    const o = { ex, sets: clamp(Math.round(+it.sets) || 0, 0, 20), reps: it.reps, w: it.w, rest: it.rest, note: it.note };
+    if (it.wk) o.wk = it.wk;
+    return o;
   }) })).filter(d => d.items.length);
   if (!days.length) { toast('Добавьте хотя бы одно упражнение', 'Кнопка «+ Упражнение» под днём'); return; }
   const old = D.editId ? real.programs.find(x => x.id === D.editId) : null;
-  const p = normProgram({ id: old ? old.id : 'p_' + uid(), name: D.name.trim() || (D.mode === 'import' ? '' : 'Моя программа'), coach: D.coach, note: D.note, created: old ? old.created : Date.now(), days });
+  const weekly = days.some(d => d.items.some(i => i.wk));
+  const p = normProgram({ id: old ? old.id : 'p_' + uid(), name: D.name.trim() || (D.mode === 'import' ? '' : 'Моя программа'), coach: D.coach, note: D.note, created: old ? old.created : Date.now(), days,
+    start: old && Number.isFinite(old.start) ? old.start : weekly ? weekStart(Date.now()) : undefined });
   if (!p) { toast('В программе не осталось упражнений'); return; }
   const info = `${pl(p.days.length, 'день', 'дня', 'дней')} · ${pl(p.days.reduce((a, d) => a + d.items.length, 0), 'упражнение', 'упражнения', 'упражнений')}`;
   imp.draft = null; ui.progDay = null; ver++;
@@ -4719,17 +4978,20 @@ function startManual() {
 function startEdit(id) {
   const p = real.programs.find(x => x.id === id); if (!p) return;
   imp.draft = { mode: 'edit', editId: p.id, name: p.name, coach: p.coach, note: p.note, warnings: [],
-    days: p.days.map(d => ({ name: d.name, note: d.note, items: d.items.map(it => ({ ex: it.ex, sets: it.sets, reps: it.reps, w: it.w, rest: it.rest, note: it.note })) })) };
+    days: p.days.map(d => ({ name: d.name, note: d.note, items: d.items.map(it => ({ ex: it.ex, sets: it.sets, reps: it.reps, w: it.w, rest: it.rest, note: it.note, ...(it.wk ? { wk: it.wk.map(x => ({ ...x })) } : {}) })) })) };
   openReview(true);
 }
 function openProgram(id) {
   const p = S.programs.find(x => x.id === id); if (!p) return;
-  const act = S.prog.id === p.id;
+  const act = S.prog.id === p.id, W = progWeek(p);
   sheet(`<div class="sheet-head"><h2 class="sheet-title">${esc(p.name)}</h2><button class="btn btn-text" data-a="close">Закрыть</button></div>
     <p class="note">${pl(p.days.length, 'день', 'дня', 'дней')}${p.coach ? ' · тренер ' + esc(p.coach) : ''} · добавлена ${dLong(p.created)}</p>
     ${p.note ? `<p class="pg-note">${esc(p.note)}</p>` : ''}
+    ${W.n ? `<div class="pg-weeks"><p class="label">Неделя программы</p><div class="day-chips" role="group" aria-label="Неделя программы" style="grid-template-columns:repeat(${Math.min(8, W.n)},minmax(0,1fr))">${Array.from({ length: W.n }, (_, k) =>
+      `<button class="daychip" data-a="prog-week" data-id="${esc(p.id)}" data-w="${k}" aria-pressed="${k === W.k}">${k + 1}</button>`).join('')}</div>
+      <p class="note">${W.over ? `Все ${pl(W.n, 'неделя', 'недели', 'недель')} позади, цели остаются как в последней. Нажмите «1», чтобы пройти программу заново.` : `Сейчас неделя ${W.k + 1}, цели ниже — для неё. Каждый понедельник неделя сменится сама. Если сбились, нажмите нужную.`}</p></div>` : ''}
     ${p.days.map((d, k) => `<div class="pg-day"><div class="h-sec"><b>${esc(d.name)}</b><button class="btn btn-sm ${act && k === S.prog.next ? 'btn-act' : 'btn-ghost'}" data-a="prog-start" data-id="${esc(p.id)}" data-d="${k}">Начать</button></div>
-      <ol class="pg-list">${d.items.map(it => `<li><span>${esc(exById(it.ex).name)}${it.note ? `<small class="rv-note" style="display:block;font-weight:500">${esc(it.note)}</small>` : ''}</span><span>${esc(tgText(it)) || '—'}</span></li>`).join('')}</ol>
+      <ol class="pg-list">${d.items.map(it => `<li><span>${esc(exById(it.ex).name)}${it.note ? `<small class="rv-note" style="display:block;font-weight:500">${esc(it.note)}</small>` : ''}</span><span>${esc(tgText(itemTg(it, W.k))) || '—'}</span></li>`).join('')}</ol>
       ${d.note ? `<p class="rv-note">${esc(d.note)}</p>` : ''}</div>`).join('')}
     ${act ? '<p class="note" style="text-align:center">Это активная программа: её следующий день показан на главной.</p>' : `<button class="btn btn-act btn-wide" data-a="prog-active" data-id="${esc(p.id)}">Сделать активной</button>`}
     ${demoMode ? '' : `<button class="btn btn-ghost btn-wide" data-a="prog-edit" data-id="${esc(p.id)}">${ICON.pen}Изменить программу</button>
@@ -4740,6 +5002,12 @@ function openProgram(id) {
 /* New exercise card. Hints come from the last time; with a coach target the card gets the coach's
    number of sets, and the coach's weight and reps fill in when there is no history yet. */
 function addExercise(id, quiet, tg) {
+  S.active.items.push(makeItem(id, tg));
+  if (quiet) return;
+  save(); render();
+  requestAnimationFrame(() => { const cards = document.querySelectorAll('.ex'); const c = cards[cards.length - 1]; if (c) c.scrollIntoView({ block: 'start', behavior: 'smooth' }); });
+}
+function makeItem(id, tg) {
   const ex = exById(id), last = lastSetsFor(an(), id);
   const hint = s => ({ w: '', r: '', pw: s && s.w > 0 ? fmtW(s.w).replace(/\s/g, '') : '', pr: s ? String(s.r) : '', done: false });
   let sets = last ? last.sets.map(hint) : [];
@@ -4753,17 +5021,14 @@ function addExercise(id, quiet, tg) {
   if (!sets.length) sets = [0, 1, 2].map(() => hint(null));
   const item = { ex: ex.id, sets };
   if (tg) item.tg = { sets: tg.sets || 0, reps: tg.reps || '', w: tg.w || '', rest: tg.rest || 0, note: tg.note || '' };
-  S.active.items.push(item);
-  if (quiet) return;
-  save(); render();
-  requestAnimationFrame(() => { const cards = document.querySelectorAll('.ex'); const c = cards[cards.length - 1]; if (c) c.scrollIntoView({ block: 'start', behavior: 'smooth' }); });
+  return item;
 }
 function beginWorkout(entries, plan) {
   if (demoMode) { setMode(false); real.settings.introDone = true; }
   if (S.active) { tab = 'home'; render(true); toast('Тренировка уже идёт'); return; }
   S.active = { id: uid(), start: Date.now(), items: [], rest: null };
   if (plan) S.active.plan = plan;
-  entries.forEach(e => addExercise(e.ex, true, e.tg));
+  entries.forEach(e => { addExercise(e.ex, true, e.tg); if (e.pi != null) S.active.items[S.active.items.length - 1].pi = e.pi; });
   tab = 'home'; ui.openW = null; ui.progDay = null;
   save(); render(true); keepAwake(true);
   if (!entries.length) openPicker();
@@ -4775,7 +5040,80 @@ function startWorkout(fromId) {
 function startProgramDay(pid, d) {
   const p = S.programs.find(x => x.id === pid), day = p && p.days[d];
   if (!day) return;
-  beginWorkout(day.items.map(it => ({ ex: it.ex, tg: it })), { p: p.id, d, n: day.name });
+  const k = progWeek(p).k;
+  beginWorkout(day.items.map((it, pi) => ({ ex: it.ex, tg: itemTg(it, k), pi })), k >= 0 ? { p: p.id, d, n: day.name, wk: k } : { p: p.id, d, n: day.name });
+}
+/* Changing the programme during a workout. An exercise of the active workout knows its place in the programme day (pi);
+   the place is checked against the exercise, so an edit made elsewhere in the meantime cannot hit the wrong one. */
+function progItem(it) {
+  const a = S.active, p = a && a.plan && S.programs.find(x => x.id === a.plan.p), day = p && p.days[a.plan.d];
+  if (!day) return null;
+  let k = it.pi != null && day.items[it.pi] && day.items[it.pi].ex === it.ex ? it.pi : -1;
+  if (k < 0 && it.tg) k = day.items.findIndex(x => x.ex === it.ex);
+  return { p, day, k, x: k >= 0 ? day.items[k] : null };
+}
+function openTgEdit(i) {
+  const a = S.active, it = a && a.items[i]; if (!it) return;
+  const ex = exById(it.ex), P = progItem(it), wkn = a.plan && a.plan.wk >= 0 ? a.plan.wk : -1;
+  const weekly = !!(P && P.x && P.x.wk && wkn >= 0);
+  const f = it.sets.find(s => s.done || String(s.r).trim() !== '') || it.sets[0] || {};
+  const t = it.tg || { sets: it.sets.length, reps: String(f.r || f.pr || '').replace('—', ''), w: String(f.w || f.pw || ''), rest: 0, note: '' };
+  ui.tgI = i; ui.tgScope = 'week';
+  const fld = (id, lbl, v, mode) => `<label><span>${lbl}</span><input class="field" id="${id}" value="${esc(v)}" inputmode="${mode}" autocomplete="off"></label>`;
+  sheet(`<div class="sheet-head"><h2 class="sheet-title">${P && !P.x ? 'Добавить в программу' : 'Упражнение в программе'}</h2><button class="btn btn-text" data-a="close">Закрыть</button></div>
+    <p class="note"><b>${esc(ex.name)}</b>${P ? ' · ' + esc(P.day.name) : ''}${weekly ? ` · неделя ${wkn + 1}` : ''}</p>
+    <div class="rv-f">${fld('tg-sets', 'подходы', t.sets || '', 'numeric')}${fld('tg-reps', 'повторы', t.reps, 'text')}${fld('tg-w', 'вес, кг', t.w, 'decimal')}</div>
+    <div class="rv-f tg-f2">${fld('tg-rest', 'отдых, сек', t.rest || '', 'numeric')}${fld('tg-note', 'заметка', t.note, 'text')}</div>
+    ${weekly ? `<p class="tg-lbl">Подходы, повторы и вес менять</p><div class="seg" role="group" aria-label="Для каких недель"><button data-a="tg-scope" data-v="week" aria-pressed="true">только на неделе ${wkn + 1}</button><button data-a="tg-scope" data-v="rest" aria-pressed="false">с ${wkn + 1}-й до конца</button></div>` : ''}
+    ${P && P.x ? '<label class="check"><input type="checkbox" id="tg-prog" checked> Сохранить и в программе</label>' : ''}
+    <button class="btn btn-act btn-wide" data-a="tg-save">${P && !P.x ? `Добавить в «${esc(P.day.name)}»` : 'Сохранить'}</button>
+    ${P && P.x ? `<button class="btn btn-ghost btn-wide" data-a="tg-swap">Заменить упражнение</button><button class="btn btn-danger btn-wide" data-a="tg-drop">Убрать из программы</button>` : ''}`);
+}
+/* After a target change: as many set rows as the new target (rows already filled stay), and the coach numbers as hints
+   when the exercise has no history. */
+function fitSets(it, t, old) {
+  const n = clamp(t.sets, 0, 12);
+  if (n) {
+    while (it.sets.length < n) { const p = it.sets[it.sets.length - 1]; it.sets.push({ w: '', r: '', pw: p ? (p.w !== '' ? p.w : p.pw) : '', pr: p ? (p.r !== '' ? p.r : p.pr) : '', done: false }); }
+    while (it.sets.length > n) { const s = it.sets[it.sets.length - 1]; if (s.done || String(s.w).trim() !== '' || String(s.r).trim() !== '') break; it.sets.pop(); }
+  }
+  if (lastSetsFor(an(), it.ex)) return;
+  const tw = firstNum(/%/.test(t.w) ? '' : t.w), tr = firstNum(t.reps);
+  it.sets.forEach(s => { if (s.done) return; if (t.w !== old.w) s.pw = tw ? fmtW(tw).replace(/\s/g, '') : ''; if (t.reps !== old.reps) s.pr = tr ? String(tr) : ''; });
+}
+function saveTg() {
+  const a = S.active, i = ui.tgI, it = a && a.items[i]; if (!it) { closeSheet(); return; }
+  const v = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+  const t = { sets: clamp(Math.round(num(v('tg-sets'))) || 0, 0, 20), reps: v('tg-reps').slice(0, 30), w: v('tg-w').slice(0, 30), rest: clamp(Math.round(num(v('tg-rest'))) || 0, 0, 900), note: v('tg-note').slice(0, 200) };
+  const old = it.tg || { sets: 0, reps: '', w: '', rest: 0, note: '' }, P = progItem(it), cb = document.getElementById('tg-prog');
+  it.tg = t; fitSets(it, t, old);
+  let msg = 'Только в этой тренировке';
+  if (P && !P.x) {
+    if (P.day.items.length >= 30) { toast('В дне уже 30 упражнений'); return; }
+    P.day.items.push({ ex: it.ex, sets: t.sets, reps: t.reps, w: t.w, rest: t.rest, note: t.note }); it.pi = P.day.items.length - 1;
+    msg = `Добавлено в «${P.day.name}»`;
+  } else if (P && cb && cb.checked) {
+    const x = P.x, k = a.plan.wk;
+    if (x.wk && k >= 0) {
+      const k0 = Math.min(k, x.wk.length - 1), k1 = ui.tgScope === 'rest' ? x.wk.length : k0 + 1;
+      for (let j = k0; j < k1; j++) { const y = x.wk[j]; if (t.sets !== old.sets) y.s = t.sets; if (t.reps !== old.reps) y.r = t.reps; if (t.w !== old.w) y.w = t.w; }
+      msg = ui.tgScope === 'rest' && k1 - k0 > 1 ? `В программе: недели ${k0 + 1}–${k1}` : `В программе: неделя ${k0 + 1}`;
+    } else { Object.assign(x, { sets: t.sets, reps: t.reps, w: t.w }); msg = 'И в программе тоже'; }
+    x.rest = t.rest; x.note = t.note;
+  }
+  if (P && msg !== 'Только в этой тренировке') { ver++; save(); cloudSync(); } else save();
+  closeSheet(); render(); toast('Цель изменена', msg);
+}
+/* Swap an exercise of the workout. Rows already done stay with the old exercise; the new one takes its target and place. */
+function swapActive(P, id) {
+  ui.pick = null;
+  const a = S.active, it = a && a.items[P.w]; if (!it) { closeSheet(); return; }
+  const Q = P.prog ? progItem(it) : null, nu = makeItem(id, it.tg);
+  if (Q && Q.x) { Q.x.ex = id; nu.pi = Q.k; }
+  const kept = it.sets.filter(s => s.done || String(s.w).trim() !== '' || String(s.r).trim() !== '');
+  if (kept.length) { it.sets = kept; delete it.tg; delete it.pi; a.items.splice(P.w + 1, 0, nu); } else a.items[P.w] = nu;
+  if (Q && Q.x) { ver++; save(); cloudSync(); } else save();
+  closeSheet(); render(); toast(`Теперь: ${exById(id).name}`, Q && Q.x ? 'И в программе тоже' : 'Только в этой тренировке');
 }
 function toggleDone(i, j) {
   const it = S.active.items[i], s = it.sets[j], ex = exById(it.ex);
@@ -4993,14 +5331,17 @@ const ACT = {
   repeat: el => { if (S.active && !demoMode) { toast('Сначала завершите текущую тренировку'); return; } closeSheet(); startWorkout(el.dataset.id); },
   pick: () => openPicker(),
   'add-ex': el => {
+    if (ui.pick && ui.pick.w != null) { swapActive(ui.pick, el.dataset.id); return; }
     if (ui.pick) { pickToDraft({ ex: el.dataset.id }); return; }
     closeSheet(); addExercise(el.dataset.id);
   },
   'create-ex': () => {
     const name = ($('#pick-q').value || '').trim().slice(0, 60); if (!name) return;
-    if (ui.pick) { pickToDraft({ ex: null, nw: { name: name.charAt(0).toUpperCase() + name.slice(1), group: 'Другое', bw: false } }); return; }
+    if (ui.pick && ui.pick.w == null) { pickToDraft({ ex: null, nw: { name: name.charAt(0).toUpperCase() + name.slice(1), group: 'Другое', bw: false } }); return; }
     const c = { id: 'c_' + uid(), name, group: 'Другое', bw: false, custom: true };
-    S.custom.push(c); ver++; closeSheet(); addExercise(c.id);
+    S.custom.push(c); ver++;
+    if (ui.pick) { swapActive(ui.pick, c.id); return; }
+    closeSheet(); addExercise(c.id);
     toast('Упражнение создано', 'Группу мышц можно поменять в разделе «Ещё»');
   },
   done: el => { const row = el.closest('.set'); toggleDone(+row.dataset.i, +row.dataset.j); },
@@ -5123,7 +5464,23 @@ const ACT = {
   'confirm-ok': () => { const f = pendingConfirm; pendingConfirm = null; if (f) f(); },
   'confirm-no': () => { const f = pendingCancel; pendingCancel = null; if (f) f(); else closeSheet(); },
   close: closeSheet,
-  'pick-back': () => { ui.pick = null; openReview(); },
+  'pick-back': () => { const P = ui.pick; ui.pick = null; if (P && P.w != null) openTgEdit(P.w); else openReview(); },
+  'tg-edit': el => openTgEdit(+el.dataset.i),
+  'tg-scope': el => { ui.tgScope = el.dataset.v; el.parentNode.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b === el))); },
+  'tg-save': saveTg,
+  'tg-swap': () => { const cb = $('#tg-prog'); openPicker({ w: ui.tgI, prog: !!(cb && cb.checked) }); },
+  'tg-drop': () => {
+    const i = ui.tgI, it = S.active && S.active.items[i], Q = it && progItem(it);
+    if (!Q || !Q.x) { closeSheet(); return; }
+    if (Q.day.items.length <= 1) { toast('Это единственное упражнение дня', 'Удалить день можно в «Изменить программу»'); return; }
+    const filled = it.sets.some(s => s.done || String(s.w).trim() !== '' || String(s.r).trim() !== '');
+    confirmSheet('Убрать из программы?', `«${esc(exById(it.ex).name)}» больше не будет в «${esc(Q.day.name)}».${filled ? ' Записанные подходы останутся в этой тренировке.' : ''}`, 'Убрать', () => {
+      Q.day.items.splice(Q.k, 1);
+      S.active.items.forEach(x => { if (x.pi > Q.k) x.pi--; });
+      if (filled) { delete it.tg; delete it.pi; } else S.active.items.splice(i, 1);
+      ver++; save(); cloudSync(); closeSheet(); render(); toast('Убрано из программы', Q.day.name);
+    }, 'Отмена', () => openTgEdit(i));
+  },
   'prog-import': openProgImport,
   'imp-rm': el => { imp.files.splice(+el.dataset.k, 1); renderImpFiles(); },
   'imp-go': runImport,
@@ -5180,6 +5537,13 @@ const ACT = {
     closeSheet(); startProgramDay(el.dataset.id, +el.dataset.d);
   },
   'prog-day': el => { ui.progDay = +el.dataset.d; render(); },
+  'prog-week': el => {
+    const p = S.programs.find(x => x.id === el.dataset.id); if (!p) return;
+    const k = +el.dataset.w, sh = $('.sheet'), top = sh ? sh.scrollTop : 0;
+    p.start = addDays(weekStart(Date.now()), -7 * k); ver++; save(); cloudSync();
+    openProgram(p.id); const s2 = $('.sheet'); if (s2) s2.scrollTop = top;
+    render(); toast(`Сейчас неделя ${k + 1}`, 'Цели на тренировках — для неё');
+  },
   'prog-active': el => { S.prog = { id: el.dataset.id, next: 0 }; ui.progDay = null; save(); closeSheet(); tab = 'home'; render(true); toast('Программа стала активной', 'Её следующий день — на главной'); },
   'prog-del': el => {
     const id = el.dataset.id, p = S.programs.find(x => x.id === id); if (!p) return;
@@ -5255,7 +5619,15 @@ document.addEventListener('input', e => {
     if (k === 'name') D.name = t.value.slice(0, 60);
     else if (k === 'coach') D.coach = t.value.slice(0, 40);
     else if (k === 'dname') D.days[+t.dataset.d].name = t.value.slice(0, 60);
-    else { const it = D.days[+t.dataset.d].items[+t.dataset.i]; it[k] = k === 'sets' ? clamp(Math.round(num(t.value)) || 0, 0, 20) : t.value.slice(0, 30); }
+    else {
+      const it = D.days[+t.dataset.d].items[+t.dataset.i];
+      if (k === 'wkc') {
+        const y = it.wk[+t.dataset.k], v = t.value.trim(), m = v.match(/^(\d{1,2})\s*[xхХX×*]\s*(\S.*)$/);
+        if (m) { y.s = clamp(+m[1], 0, 20); y.r = m[2] === '?' ? '' : m[2].slice(0, 30); } else { y.s = 0; y.r = /^\d/.test(v) ? v.slice(0, 30) : ''; }
+        const b = it.wk.find(x => x.s || x.r); it.sets = b ? b.s : 0; it.reps = b ? b.r : '';
+      }
+      else it[k] = k === 'sets' ? clamp(Math.round(num(t.value)) || 0, 0, 20) : t.value.slice(0, 30);
+    }
   }
 });
 document.addEventListener('change', e => {

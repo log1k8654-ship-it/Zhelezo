@@ -1,5 +1,5 @@
 /* Offline cache for the gym diary: the app shell first, then the readers for coach programmes (PDF, Word, Excel, photo OCR). */
-const V = 'zhelezo-e3734384ec';
+const V = 'zhelezo-24b548d208';
 const CORE = ["./", "index.html", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png", "nunito-cyrillic.woff2", "nunito-latin.woff2", "unbounded-cyrillic.woff2", "unbounded-latin.woff2"];
 const EXTRA = ["pdf.min.js", "pdf.worker.min.js", "mammoth.browser.min.js", "xlsx.full.min.js", "tesseract.min.js", "worker.min.js", "tesseract-core-simd-lstm.wasm.js", "tesseract-core-lstm.wasm.js", "rus.traineddata.gz", "eng.traineddata.gz"];
 self.addEventListener('install', e => {
